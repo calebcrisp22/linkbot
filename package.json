@@ -7,7 +7,7 @@
     "start": "node --enable-source-maps dist/index.js",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "migrate": "tsx src/migrate.ts"
+    "migrate": "tsx migrate.ts"
   },
   "dependencies": {
     "discord.js": "^14.19.3",
