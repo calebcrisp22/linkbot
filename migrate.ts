@@ -138,18 +138,33 @@ async function migrate() {
   await verifyTablesDropped(client);
 
   console.log("\n=== Step 2: Creating new tables/types ===");
+  let hasFailure = false;
   for (const statement of CREATE_STATEMENTS) {
-    await runStatement(client, statement);
+    const success = await runStatement(client, statement);
+    if (!success) {
+      hasFailure = true;
+    }
   }
 
   await logExistingTables(client);
   await logBotKeysColumns(client);
 
-  console.log("\n✅ Migration finished (see log above for any failed statements).");
+  if (hasFailure) {
+    console.error(
+      "\n❌ Migration finished with one or more failed CREATE statements. See log above for details."
+    );
+    await client.end();
+    console.error("\n🛑 Exiting with code 1 due to migration failure.");
+    process.exit(1);
+  }
+
+  console.log("\n✅ Migration finished successfully (all statements succeeded).");
   await client.end();
+  console.log("\n👋 Migration script exiting with code 0.");
 }
 
 migrate().catch((err) => {
   console.error("Migration failed:", err);
+  console.error("\n🛑 Exiting with code 1 due to unhandled error.");
   process.exit(1);
 });
