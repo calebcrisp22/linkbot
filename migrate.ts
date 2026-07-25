@@ -16,7 +16,7 @@ const STATEMENTS = [
   `CREATE TYPE key_status AS ENUM ('active', 'redeemed', 'invalid');`,
   `DROP TYPE IF EXISTS console_platform;`,
   `CREATE TYPE console_platform AS ENUM ('xbox', 'playstation');`,
-  `CREATE TABLE IF NOT EXISTS bot_keys (
+  `CREATE TABLE bot_keys (
   id          SERIAL PRIMARY KEY,
   guild_id    TEXT NOT NULL,
   code        TEXT NOT NULL UNIQUE,
@@ -26,14 +26,14 @@ const STATEMENTS = [
   created_at  TIMESTAMP NOT NULL DEFAULT NOW(),
   redeemed_at TIMESTAMP
 );`,
-  `CREATE TABLE IF NOT EXISTS bot_user_balances (
+  `CREATE TABLE bot_user_balances (
   id         SERIAL PRIMARY KEY,
   guild_id   TEXT NOT NULL,
   user_id    TEXT NOT NULL,
   balance    INTEGER NOT NULL DEFAULT 0,
   updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );`,
-  `CREATE TABLE IF NOT EXISTS bot_guild_config (
+  `CREATE TABLE bot_guild_config (
   guild_id           TEXT PRIMARY KEY,
   link_channel_id    TEXT,
   sellauth_api_key   TEXT,
@@ -42,7 +42,7 @@ const STATEMENTS = [
   psn_tutorial_url   TEXT,
   updated_at         TIMESTAMP NOT NULL DEFAULT NOW()
 );`,
-  `CREATE TABLE IF NOT EXISTS bot_console_links (
+  `CREATE TABLE bot_console_links (
   id               SERIAL PRIMARY KEY,
   guild_id         TEXT NOT NULL,
   user_id          TEXT NOT NULL,
