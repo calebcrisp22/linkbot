@@ -8,9 +8,13 @@ import "dotenv/config";
 const { Client } = pg;
 
 const STATEMENTS = [
-  `DROP TYPE IF EXISTS key_status CASCADE;`,
+  `DROP TABLE IF EXISTS bot_console_links;`,
+  `DROP TABLE IF EXISTS bot_user_balances;`,
+  `DROP TABLE IF EXISTS bot_keys;`,
+  `DROP TABLE IF EXISTS bot_guild_config;`,
+  `DROP TYPE IF EXISTS key_status;`,
   `CREATE TYPE key_status AS ENUM ('active', 'redeemed', 'invalid');`,
-  `DROP TYPE IF EXISTS console_platform CASCADE;`,
+  `DROP TYPE IF EXISTS console_platform;`,
   `CREATE TYPE console_platform AS ENUM ('xbox', 'playstation');`,
   `CREATE TABLE IF NOT EXISTS bot_keys (
   id          SERIAL PRIMARY KEY,
