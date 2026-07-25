@@ -1,0 +1,24 @@
+{
+  "name": "discord-linker-bot",
+  "version": "1.0.0",
+  "description": "Discord key management & console linking bot",
+  "type": "module",
+  "scripts": {
+    "start": "node --enable-source-maps dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "migrate": "tsx src/migrate.ts"
+  },
+  "dependencies": {
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.4.7",
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
