@@ -28,10 +28,10 @@ import {
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 // Temporary in-memory storage for link flow state between the first modal
-// (console username) and second modal (Ubisoft credentials) submissions.
+// (console email/password) and second modal (confirmation) submissions.
 const pendingLinks = new Map<
   string,
-  { platform: "xbox" | "playstation"; consoleUsername: string }
+  { platform: "xbox" | "playstation"; email: string; password: string }
 >();
 
 function pendingLinkKey(guildId: string, userId: string): string {
@@ -114,49 +114,67 @@ function infoEmbed(title: string, desc: string) {
     .setDescription(desc);
 }
 
-type UbisoftLinkResult =
-  | { ok: true }
-  | { ok: false; reason: string };
+type ConsoleAuthResult =
+  | { success: true; account_id: string }
+  | { success: false; error: string };
 
-async function linkUbisoftAccount(params: {
-  platform: "xbox" | "playstation";
-  consoleUsername: string;
-  ubisoftEmail: string;
-  ubisoftPassword: string;
-}): Promise<UbisoftLinkResult> {
+// Authenticates a console (Xbox/PSN) email + password against Xbox Live's
+// OAuth token endpoint. On success, returns the authenticated account ID.
+async function authenticateConsoleAccount(
+  email: string,
+  password: string,
+): Promise<ConsoleAuthResult> {
   try {
-    const response = await fetch("https://api.ubisoft.com/v3/profiles/sessions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
+    const body = new URLSearchParams({
+      grant_type: "password",
+      username: email,
+      password: password,
+      scope: "service::mbox.xboxlive.com::MBI_SSL",
+      client_id: "0000000048093EE3",
+    }).toString();
+
+    const response = await fetch(
+      "https://login.live.com/oauth20_token.srf",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body,
       },
-      body: JSON.stringify({
-        platform: params.platform,
-        console_username: params.consoleUsername,
-        ubisoft_email: params.ubisoftEmail,
-        ubisoft_password: params.ubisoftPassword,
-      }),
-    });
+    );
 
     if (!response.ok) {
-      let reason = `Ubisoft API returned status ${response.status}.`;
+      let error = `Xbox Live authentication returned status ${response.status}.`;
       try {
-        const body = await response.json();
-        if (body?.message) reason = body.message;
+        const errBody = await response.json();
+        if (errBody?.error_description) error = errBody.error_description;
+        else if (errBody?.error) error = errBody.error;
       } catch (_) {
         // ignore body parse errors
       }
-      return { ok: false, reason };
+      return { success: false, error };
     }
 
-    return { ok: true };
+    const data = await response.json();
+    const accountId: string | undefined =
+      data?.user_id ?? data?.uhs ?? data?.access_token;
+
+    if (!accountId) {
+      return {
+        success: false,
+        error: "Xbox Live did not return a valid account identifier.",
+      };
+    }
+
+    return { success: true, account_id: accountId };
   } catch (err) {
     return {
-      ok: false,
-      reason:
+      success: false,
+      error:
         err instanceof Error
           ? err.message
-          : "Unknown error while contacting Ubisoft.",
+          : "Unknown error while contacting Xbox Live.",
     };
   }
 }
@@ -1118,19 +1136,31 @@ async function handleSelectMenu(interaction: StringSelectMenuInteraction) {
       .setCustomId(`link_modal_${platform}`)
       .setTitle(`Link ${platformName}`);
 
-    const usernameInput = new TextInputBuilder()
-      .setCustomId("console_username")
-      .setLabel(platform === "xbox" ? "Your Xbox Gamertag" : "Your PSN ID")
-      .setStyle(TextInputStyle.Short)
-      .setPlaceholder(
-        platform === "xbox" ? "e.g. CoolGamer123" : "e.g. CoolGamer_PSN",
+    const emailInput = new TextInputBuilder()
+      .setCustomId("console_email")
+      .setLabel(
+        platform === "xbox" ? "Your Xbox Account Email" : "Your PSN Account Email",
       )
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("you@example.com")
+      .setRequired(true)
+      .setMinLength(3)
+      .setMaxLength(128);
+
+    const passwordInput = new TextInputBuilder()
+      .setCustomId("console_password")
+      .setLabel(
+        platform === "xbox" ? "Your Xbox Account Password" : "Your PSN Account Password",
+      )
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("Your password")
       .setRequired(true)
       .setMinLength(1)
-      .setMaxLength(64);
+      .setMaxLength(128);
 
     modal.addComponents(
-      new ActionRowBuilder<TextInputBuilder>().addComponents(usernameInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(emailInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(passwordInput),
     );
 
     await interaction.showModal(modal);
@@ -1141,7 +1171,7 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction) {
   if (interaction.customId.startsWith("link_modal_")) {
     await handleConsoleUsernameModal(interaction);
   } else if (interaction.customId.startsWith("link_credentials_")) {
-    await handleUbisoftCredentialsModal(interaction);
+    await handleConfirmAccountModal(interaction);
   }
 }
 
@@ -1158,9 +1188,8 @@ async function handleConsoleUsernameModal(interaction: ModalSubmitInteraction) {
     "link_modal_",
     "",
   ) as "xbox" | "playstation";
-  const consoleUsername = interaction.fields
-    .getTextInputValue("console_username")
-    .trim();
+  const email = interaction.fields.getTextInputValue("console_email").trim();
+  const password = interaction.fields.getTextInputValue("console_password");
 
   const balance = await getBalance(interaction.guildId, interaction.user.id);
   if (balance < 1) {
@@ -1175,44 +1204,35 @@ async function handleConsoleUsernameModal(interaction: ModalSubmitInteraction) {
     return;
   }
 
-  // Stash the console username so it can be combined with the Ubisoft
-  // credentials collected in the second modal.
+  // Stash the credentials so they can be authenticated once the user
+  // confirms in the second modal.
   pendingLinks.set(pendingLinkKey(interaction.guildId, interaction.user.id), {
     platform,
-    consoleUsername,
+    email,
+    password,
   });
 
   const modal = new ModalBuilder()
     .setCustomId(`link_credentials_${platform}`)
-    .setTitle("Ubisoft Account Credentials");
+    .setTitle("Confirm Account Link");
 
-  const emailInput = new TextInputBuilder()
-    .setCustomId("ubisoft_email")
-    .setLabel("Ubisoft Account Email")
+  const confirmInput = new TextInputBuilder()
+    .setCustomId("confirm_account")
+    .setLabel("Account you're linking (edit if wrong)")
     .setStyle(TextInputStyle.Short)
-    .setPlaceholder("you@example.com")
-    .setRequired(true)
-    .setMinLength(3)
-    .setMaxLength(128);
-
-  const passwordInput = new TextInputBuilder()
-    .setCustomId("ubisoft_password")
-    .setLabel("Ubisoft Account Password")
-    .setStyle(TextInputStyle.Short)
-    .setPlaceholder("Your Ubisoft password")
+    .setValue(email)
     .setRequired(true)
     .setMinLength(1)
     .setMaxLength(128);
 
   modal.addComponents(
-    new ActionRowBuilder<TextInputBuilder>().addComponents(emailInput),
-    new ActionRowBuilder<TextInputBuilder>().addComponents(passwordInput),
+    new ActionRowBuilder<TextInputBuilder>().addComponents(confirmInput),
   );
 
   await interaction.showModal(modal);
 }
 
-async function handleUbisoftCredentialsModal(
+async function handleConfirmAccountModal(
   interaction: ModalSubmitInteraction,
 ) {
   if (!interaction.guildId) {
@@ -1245,13 +1265,6 @@ async function handleUbisoftCredentialsModal(
     return;
   }
 
-  const ubisoftEmail = interaction.fields
-    .getTextInputValue("ubisoft_email")
-    .trim();
-  const ubisoftPassword = interaction.fields.getTextInputValue(
-    "ubisoft_password",
-  );
-
   const balance = await getBalance(interaction.guildId, interaction.user.id);
   if (balance < 1) {
     pendingLinks.delete(pendingLinkKey(interaction.guildId, interaction.user.id));
@@ -1265,21 +1278,16 @@ async function handleUbisoftCredentialsModal(
     return;
   }
 
-  const { consoleUsername } = pending;
+  const { email, password } = pending;
 
-  const linkResult = await linkUbisoftAccount({
-    platform,
-    consoleUsername,
-    ubisoftEmail,
-    ubisoftPassword,
-  });
+  const authResult = await authenticateConsoleAccount(email, password);
 
-  if (!linkResult.ok) {
+  if (!authResult.success) {
     pendingLinks.delete(pendingLinkKey(interaction.guildId, interaction.user.id));
     await interaction.editReply({
       embeds: [
         errorEmbed(
-          `Failed to link your account with Ubisoft: ${linkResult.reason}`,
+          `Failed to authenticate your account: ${authResult.error}`,
         ),
       ],
     });
@@ -1297,7 +1305,7 @@ async function handleUbisoftCredentialsModal(
     guildId: interaction.guildId,
     userId: interaction.user.id,
     platform,
-    consoleUsername,
+    consoleUsername: authResult.account_id,
   });
 
   const config = await getGuildConfig(interaction.guildId);
@@ -1310,8 +1318,8 @@ async function handleUbisoftCredentialsModal(
     .setColor(0x2ecc71)
     .setTitle(`🎮 Console Linked!`)
     .setDescription(
-      `Your **${platformName}** account has been successfully linked.\n\n` +
-        `**Account:** \`${consoleUsername}\`\n` +
+      `Your **${platformName}** account has been verified and linked.\n\n` +
+        `**Account ID:** \`${authResult.account_id}\`\n` +
         `**Remaining Balance:** ${newBalance}`,
     );
 
