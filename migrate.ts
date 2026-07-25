@@ -7,14 +7,24 @@ import "dotenv/config";
 
 const { Client } = pg;
 
-const STATEMENTS = [
-  `DROP TABLE IF EXISTS bot_console_links;`,
-  `DROP TABLE IF EXISTS bot_user_balances;`,
-  `DROP TABLE IF EXISTS bot_keys;`,
-  `DROP TABLE IF EXISTS bot_guild_config;`,
-  `DROP TYPE IF EXISTS key_status;`,
+const DROP_STATEMENTS = [
+  `DROP TABLE IF EXISTS bot_console_links CASCADE;`,
+  `DROP TABLE IF EXISTS bot_user_balances CASCADE;`,
+  `DROP TABLE IF EXISTS bot_keys CASCADE;`,
+  `DROP TABLE IF EXISTS bot_guild_config CASCADE;`,
+  `DROP TYPE IF EXISTS key_status CASCADE;`,
+  `DROP TYPE IF EXISTS console_platform CASCADE;`,
+];
+
+const DROPPED_TABLES = [
+  "bot_console_links",
+  "bot_user_balances",
+  "bot_keys",
+  "bot_guild_config",
+];
+
+const CREATE_STATEMENTS = [
   `CREATE TYPE key_status AS ENUM ('active', 'redeemed', 'invalid');`,
-  `DROP TYPE IF EXISTS console_platform;`,
   `CREATE TYPE console_platform AS ENUM ('xbox', 'playstation');`,
   `CREATE TABLE bot_keys (
   id          SERIAL PRIMARY KEY,
@@ -52,14 +62,90 @@ const STATEMENTS = [
 );`,
 ];
 
+async function runStatement(client: pg.Client, statement: string): Promise<boolean> {
+  console.log(`\n▶ Executing statement:\n${statement}`);
+  try {
+    await client.query(statement);
+    console.log("✅ Statement succeeded.");
+    return true;
+  } catch (err) {
+    console.error("❌ Statement failed:", err);
+    return false;
+  }
+}
+
+async function verifyTablesDropped(client: pg.Client) {
+  console.log("\n🔍 Verifying dropped tables no longer exist...");
+  for (const table of DROPPED_TABLES) {
+    try {
+      const result = await client.query(
+        `SELECT to_regclass($1) AS exists;`,
+        [`public.${table}`]
+      );
+      const exists = result.rows[0]?.exists !== null;
+      if (exists) {
+        console.error(`❌ Table "${table}" still exists after DROP TABLE!`);
+      } else {
+        console.log(`✅ Table "${table}" confirmed dropped.`);
+      }
+    } catch (err) {
+      console.error(`❌ Failed to verify drop for table "${table}":`, err);
+    }
+  }
+}
+
+async function logExistingTables(client: pg.Client) {
+  console.log("\n📋 Tables currently in the public schema:");
+  try {
+    const result = await client.query(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;`
+    );
+    for (const row of result.rows) {
+      console.log(`  - ${row.table_name}`);
+    }
+  } catch (err) {
+    console.error("❌ Failed to list tables:", err);
+  }
+}
+
+async function logBotKeysColumns(client: pg.Client) {
+  console.log("\n📋 Columns on bot_keys (if it exists):");
+  try {
+    const result = await client.query(
+      `SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'bot_keys' ORDER BY ordinal_position;`
+    );
+    if (result.rows.length === 0) {
+      console.log("  (table not found or has no columns)");
+    }
+    for (const row of result.rows) {
+      console.log(`  - ${row.column_name} (${row.data_type})`);
+    }
+  } catch (err) {
+    console.error("❌ Failed to list columns for bot_keys:", err);
+  }
+}
+
 async function migrate() {
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
   console.log("Running migrations...");
-  for (const statement of STATEMENTS) {
-    await client.query(statement);
+
+  console.log("\n=== Step 1: Dropping existing tables/types ===");
+  for (const statement of DROP_STATEMENTS) {
+    await runStatement(client, statement);
   }
-  console.log("✅ Database tables created successfully.");
+
+  await verifyTablesDropped(client);
+
+  console.log("\n=== Step 2: Creating new tables/types ===");
+  for (const statement of CREATE_STATEMENTS) {
+    await runStatement(client, statement);
+  }
+
+  await logExistingTables(client);
+  await logBotKeysColumns(client);
+
+  console.log("\n✅ Migration finished (see log above for any failed statements).");
   await client.end();
 }
 
