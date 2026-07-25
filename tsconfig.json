@@ -4,13 +4,13 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "sourceMap": true,
     "declaration": true
   },
-  "include": ["src"],
+  "include": ["."],
   "exclude": ["node_modules", "dist"]
 }
