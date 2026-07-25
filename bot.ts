@@ -27,6 +27,17 @@ import {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+// Temporary in-memory storage for link flow state between the first modal
+// (console username) and second modal (Ubisoft credentials) submissions.
+const pendingLinks = new Map<
+  string,
+  { platform: "xbox" | "playstation"; consoleUsername: string }
+>();
+
+function pendingLinkKey(guildId: string, userId: string): string {
+  return `${guildId}:${userId}`;
+}
+
 function generateKeyCode(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   const seg = () =>
@@ -101,6 +112,53 @@ function infoEmbed(title: string, desc: string) {
     .setColor(0x5865f2)
     .setTitle(title)
     .setDescription(desc);
+}
+
+type UbisoftLinkResult =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+async function linkUbisoftAccount(params: {
+  platform: "xbox" | "playstation";
+  consoleUsername: string;
+  ubisoftEmail: string;
+  ubisoftPassword: string;
+}): Promise<UbisoftLinkResult> {
+  try {
+    const response = await fetch("https://api.ubisoft.com/v3/profiles/sessions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        platform: params.platform,
+        console_username: params.consoleUsername,
+        ubisoft_email: params.ubisoftEmail,
+        ubisoft_password: params.ubisoftPassword,
+      }),
+    });
+
+    if (!response.ok) {
+      let reason = `Ubisoft API returned status ${response.status}.`;
+      try {
+        const body = await response.json();
+        if (body?.message) reason = body.message;
+      } catch (_) {
+        // ignore body parse errors
+      }
+      return { ok: false, reason };
+    }
+
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      reason:
+        err instanceof Error
+          ? err.message
+          : "Unknown error while contacting Ubisoft.",
+    };
+  }
 }
 
 // ─── Command Definitions ─────────────────────────────────────────────────────
@@ -1080,7 +1138,14 @@ async function handleSelectMenu(interaction: StringSelectMenuInteraction) {
 }
 
 async function handleModalSubmit(interaction: ModalSubmitInteraction) {
-  if (!interaction.customId.startsWith("link_modal_")) return;
+  if (interaction.customId.startsWith("link_modal_")) {
+    await handleConsoleUsernameModal(interaction);
+  } else if (interaction.customId.startsWith("link_credentials_")) {
+    await handleUbisoftCredentialsModal(interaction);
+  }
+}
+
+async function handleConsoleUsernameModal(interaction: ModalSubmitInteraction) {
   if (!interaction.guildId) {
     await interaction.reply({
       embeds: [errorEmbed("Server only.")],
@@ -1097,10 +1162,99 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction) {
     .getTextInputValue("console_username")
     .trim();
 
+  const balance = await getBalance(interaction.guildId, interaction.user.id);
+  if (balance < 1) {
+    await interaction.reply({
+      embeds: [
+        errorEmbed(
+          "You no longer have enough link balance. Use `/redeem` to add balance.",
+        ),
+      ],
+      flags: 64,
+    });
+    return;
+  }
+
+  // Stash the console username so it can be combined with the Ubisoft
+  // credentials collected in the second modal.
+  pendingLinks.set(pendingLinkKey(interaction.guildId, interaction.user.id), {
+    platform,
+    consoleUsername,
+  });
+
+  const modal = new ModalBuilder()
+    .setCustomId(`link_credentials_${platform}`)
+    .setTitle("Ubisoft Account Credentials");
+
+  const emailInput = new TextInputBuilder()
+    .setCustomId("ubisoft_email")
+    .setLabel("Ubisoft Account Email")
+    .setStyle(TextInputStyle.Short)
+    .setPlaceholder("you@example.com")
+    .setRequired(true)
+    .setMinLength(3)
+    .setMaxLength(128);
+
+  const passwordInput = new TextInputBuilder()
+    .setCustomId("ubisoft_password")
+    .setLabel("Ubisoft Account Password")
+    .setStyle(TextInputStyle.Short)
+    .setPlaceholder("Your Ubisoft password")
+    .setRequired(true)
+    .setMinLength(1)
+    .setMaxLength(128);
+
+  modal.addComponents(
+    new ActionRowBuilder<TextInputBuilder>().addComponents(emailInput),
+    new ActionRowBuilder<TextInputBuilder>().addComponents(passwordInput),
+  );
+
+  await interaction.showModal(modal);
+}
+
+async function handleUbisoftCredentialsModal(
+  interaction: ModalSubmitInteraction,
+) {
+  if (!interaction.guildId) {
+    await interaction.reply({
+      embeds: [errorEmbed("Server only.")],
+      flags: 64,
+    });
+    return;
+  }
+
+  const platform = interaction.customId.replace(
+    "link_credentials_",
+    "",
+  ) as "xbox" | "playstation";
+
+  const pending = pendingLinks.get(
+    pendingLinkKey(interaction.guildId, interaction.user.id),
+  );
+
   await interaction.deferReply({ flags: 64 });
+
+  if (!pending || pending.platform !== platform) {
+    await interaction.editReply({
+      embeds: [
+        errorEmbed(
+          "Your linking session expired or is invalid. Please run `/link` again.",
+        ),
+      ],
+    });
+    return;
+  }
+
+  const ubisoftEmail = interaction.fields
+    .getTextInputValue("ubisoft_email")
+    .trim();
+  const ubisoftPassword = interaction.fields.getTextInputValue(
+    "ubisoft_password",
+  );
 
   const balance = await getBalance(interaction.guildId, interaction.user.id);
   if (balance < 1) {
+    pendingLinks.delete(pendingLinkKey(interaction.guildId, interaction.user.id));
     await interaction.editReply({
       embeds: [
         errorEmbed(
@@ -1111,7 +1265,34 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction) {
     return;
   }
 
-  await modifyBalance(interaction.guildId, interaction.user.id, -1);
+  const { consoleUsername } = pending;
+
+  const linkResult = await linkUbisoftAccount({
+    platform,
+    consoleUsername,
+    ubisoftEmail,
+    ubisoftPassword,
+  });
+
+  if (!linkResult.ok) {
+    pendingLinks.delete(pendingLinkKey(interaction.guildId, interaction.user.id));
+    await interaction.editReply({
+      embeds: [
+        errorEmbed(
+          `Failed to link your account with Ubisoft: ${linkResult.reason}`,
+        ),
+      ],
+    });
+    return;
+  }
+
+  pendingLinks.delete(pendingLinkKey(interaction.guildId, interaction.user.id));
+
+  const newBalance = await modifyBalance(
+    interaction.guildId,
+    interaction.user.id,
+    -1,
+  );
   await db.insert(consoleLinksTable).values({
     guildId: interaction.guildId,
     userId: interaction.user.id,
@@ -1131,7 +1312,7 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction) {
     .setDescription(
       `Your **${platformName}** account has been successfully linked.\n\n` +
         `**Account:** \`${consoleUsername}\`\n` +
-        `**Remaining Balance:** ${balance - 1}`,
+        `**Remaining Balance:** ${newBalance}`,
     );
 
   if (tutorialUrl) {
